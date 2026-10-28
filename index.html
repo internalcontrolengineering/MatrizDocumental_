@@ -6,6 +6,8 @@
     <title>📋 Matriz de Documentación Normativa Interna — Inventario del Sistema de Control Interno Normativo</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
@@ -3376,7 +3378,89 @@
             padding: 8px;
           }
         }
-    </style>
+    
+        /* ---------- Asistente IA (búsqueda + OCR, no altera el resto) ---------- */
+        .ai-fab {
+            position: fixed; right: 18px; bottom: 18px; z-index: 99999;
+            min-width: 56px; height: 56px; padding: 0 16px; border-radius: 999px;
+            background: var(--blue); color: #fff; border: none;
+            box-shadow: 0 8px 28px rgba(37, 99, 235, 0.45);
+            cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+            font-size: 0.85rem; font-weight: 700; font-family: inherit;
+            transition: transform 0.2s ease, box-shadow 0.2s;
+        }
+        .ai-fab i { font-size: 1.1rem; }
+        .ai-fab:hover { transform: scale(1.05); box-shadow: 0 12px 32px rgba(37, 99, 235, 0.55); }
+        .ai-fab.hidden { display: none !important; }
+        .ai-panel { z-index: 100000 !important; }
+        .ai-panel {
+            position: fixed; right: 16px; bottom: 78px; z-index: 9001;
+            width: min(400px, calc(100vw - 20px)); height: min(560px, calc(100dvh - 100px));
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 14px; box-shadow: 0 16px 48px rgba(0,0,0,0.18);
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .ai-panel.hidden { display: none !important; }
+        .ai-head {
+            display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+            border-bottom: 1px solid var(--border-color); background: var(--header-bg);
+        }
+        .ai-head strong { font-size: 13px; font-weight: 600; }
+        .ai-head .tiny { display: block; font-size: 10px; color: var(--text-secondary); margin-top: 1px; }
+        .ai-head .ai-icon-btn {
+            width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border-color);
+            background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer;
+            display: grid; place-items: center; font-size: 12px;
+        }
+        .ai-head .ai-icon-btn:hover { color: var(--blue); border-color: var(--blue); }
+        .ai-msgs {
+            flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px;
+            background: var(--bg-primary);
+        }
+        .ai-msg {
+            max-width: 92%; padding: 9px 11px; border-radius: 12px; font-size: 12px; line-height: 1.45;
+            white-space: pre-wrap; word-break: break-word;
+        }
+        .ai-msg.user { align-self: flex-end; background: var(--blue); color: #fff; border-bottom-right-radius: 4px; }
+        .ai-msg.bot { align-self: flex-start; background: var(--bg-secondary); border: 1px solid var(--border-color); border-bottom-left-radius: 4px; }
+        .ai-msg.err { align-self: flex-start; background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        [data-theme="dark"] .ai-msg.err { background: #7f1d1d; color: #fecaca; border-color: #991b1b; }
+        .ai-msg .cites { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+        .ai-msg .cite {
+            font-size: 11px; padding: 6px 8px; border-radius: 8px; border: 0; text-align: left;
+            background: var(--bg-primary); color: var(--text-secondary); cursor: pointer; width: 100%;
+        }
+        .ai-msg .cite:hover { color: var(--blue); background: var(--filter-active-bg); }
+        .ai-empty { text-align: center; color: var(--text-secondary); padding: 24px 10px; font-size: 12px; }
+        .ai-empty strong { display: block; color: var(--text-primary); margin-bottom: 6px; font-size: 13px; }
+        .ai-typing { font-size: 11px; color: var(--text-secondary); padding: 0 12px 6px; }
+        .ai-typing.hidden { display: none !important; }
+        .ai-foot {
+            border-top: 1px solid var(--border-color); padding: 10px; display: flex; gap: 8px; align-items: flex-end;
+            background: var(--bg-secondary);
+        }
+        .ai-foot textarea {
+            flex: 1; min-height: 38px; max-height: 100px; resize: none; border-radius: 10px;
+            border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary);
+            padding: 8px 10px; font-size: 12px; font-family: inherit; outline: none;
+        }
+        .ai-foot textarea:focus { border-color: var(--blue); }
+        .ai-foot .btn-send {
+            height: 38px; padding: 0 12px; border-radius: 10px; border: none;
+            background: var(--blue); color: #fff; cursor: pointer; font-weight: 600; font-size: 12px;
+        }
+        .ai-foot .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
+        .ai-cfg {
+            padding: 8px 12px; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary);
+            font-size: 11px; color: var(--text-secondary);
+        }
+        .ai-cfg input {
+            width: 100%; margin-top: 4px; padding: 6px 8px; border-radius: 8px;
+            border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary);
+            font-size: 11px; font-family: ui-monospace, monospace;
+        }
+
+</style>
 </head>
 <body>
     <div id="appContainer" class="app-container" style="display:none;">
@@ -3427,6 +3511,7 @@
                         <button class="btn btn-sm btn-excel manager-only" onclick="exportToExcel(); closeHeaderMenu();"><i class="fas fa-file-excel"></i> Excel</button>
                         <button class="btn btn-sm manager-only" style="background:#6366f1;color:white;border-color:#6366f1;" onclick="openManageSolicitudesModal(); closeHeaderMenu();"><i class="fas fa-link"></i> Solicitudes</button>
                         <button class="btn btn-sm btn-danger manager-only" onclick="eliminarBD(); closeHeaderMenu();"><i class="fas fa-database"></i> Eliminar BD</button>
+                        <button class="btn btn-sm" style="background:#2563eb;color:white;border-color:#2563eb;" onclick="openAiConfigModal(); closeHeaderMenu();"><i class="fas fa-robot"></i> Configurar Asistente IA</button>
                         <div class="menu-divider"></div>
                         <button class="btn btn-sm" style="color:var(--red);" onclick="logout(); closeHeaderMenu();"><i class="fas fa-sign-out-alt"></i> Salir</button>
                     </div>
@@ -6064,6 +6149,7 @@
                     await initGeneralAccessConfig();
                     renderAll();
                     setupRealtimeSync();
+                    try { window.MatrizAI && MatrizAI.syncFab(); } catch (e) {}
                 } catch (err) {
                     console.error(err);
                     isLoggingIn = false;
@@ -6226,6 +6312,7 @@
                 applyViewOnlyMode();
                 renderAll();
                 setupRealtimeSync();
+                try { window.MatrizAI && MatrizAI.syncFab(); } catch (e) {}
             } else {
                 showLogin();
             }
@@ -10725,8 +10812,400 @@ function getFilteredData() {
             }
         });
 
+
+        // ============================================================
+        // ASISTENTE IA (búsqueda + OCR) — no modifica el resto del flujo
+        // ============================================================
+
+        function openAiConfigModal() {
+            const m = document.getElementById('aiConfigModal');
+            if (!m) return;
+            const k = document.getElementById('aiGeminiKey');
+            const mod = document.getElementById('aiGeminiModel');
+            if (k) k.value = localStorage.getItem('matriz_ai_gemini_key') || '';
+            if (mod) mod.value = localStorage.getItem('matriz_ai_gemini_model') || 'gemini-3.5-flash-lite';
+            m.classList.add('active');
+        }
+        function closeAiConfigModal() {
+            document.getElementById('aiConfigModal')?.classList.remove('active');
+        }
+        function saveAiConfigModal() {
+            const k = document.getElementById('aiGeminiKey');
+            const mod = document.getElementById('aiGeminiModel');
+            if (k) localStorage.setItem('matriz_ai_gemini_key', k.value.trim());
+            if (mod) localStorage.setItem('matriz_ai_gemini_model', (mod.value.trim() || 'gemini-3.5-flash-lite'));
+            try { window.MatrizAI && MatrizAI.saveGeminiPrefs(); } catch (e) {}
+            closeAiConfigModal();
+            if (typeof showToast === 'function') showToast('Configuración del asistente guardada', 'success');
+        }
+
+        const MatrizAI = {
+            history: [],
+            busy: false,
+            CACHE_KEY: 'matriz_ai_text_v1',
+            GEM_KEY: 'matriz_ai_gemini_key',
+            GEM_MODEL: 'matriz_ai_gemini_model',
+
+            getCache() {
+                try { return JSON.parse(localStorage.getItem(this.CACHE_KEY) || '{}'); } catch { return {}; }
+            },
+            setCache(map) {
+                try { localStorage.setItem(this.CACHE_KEY, JSON.stringify(map)); } catch (e) {}
+            },
+            getGeminiKey() {
+                const el = document.getElementById('aiGeminiKey');
+                if (el && el.value.trim()) return el.value.trim();
+                return (localStorage.getItem(this.GEM_KEY) || '').trim();
+            },
+            getGeminiModel() {
+                const el = document.getElementById('aiGeminiModel');
+                const v = (el && el.value.trim()) || localStorage.getItem(this.GEM_MODEL) || 'gemini-3.5-flash-lite';
+                return v.trim() || 'gemini-3.5-flash-lite';
+            },
+            saveGeminiPrefs() {
+                const k = document.getElementById('aiGeminiKey');
+                const m = document.getElementById('aiGeminiModel');
+                if (k) localStorage.setItem(this.GEM_KEY, k.value.trim());
+                if (m) localStorage.setItem(this.GEM_MODEL, m.value.trim() || 'gemini-3.5-flash-lite');
+            },
+
+            scopedDocs() {
+                try {
+                    if (typeof getScopedDocuments === 'function') return getScopedDocuments() || [];
+                } catch (e) {}
+                return (data && data.documents) ? data.documents.slice() : [];
+            },
+
+            metaText(doc) {
+                return [
+                    doc.nomenclatura, doc.nombre, doc.tipo, doc.categoria, doc.clasificacion,
+                    doc.unidad, doc.area, doc.departamento, doc.macro, doc.comentarios,
+                    doc.status, doc.documentoPadre, doc.hipervinculo
+                ].filter(Boolean).join(' ');
+            },
+
+            htmlToText(html) {
+                const d = document.createElement('div');
+                d.innerHTML = String(html || '');
+                return (d.innerText || d.textContent || '').replace(/\s+/g, ' ').trim();
+            },
+
+            async extractPdf(blob) {
+                if (!window.pdfjsLib) return '';
+                try {
+                    pdfjsLib.GlobalWorkerOptions.workerSrc =
+                        'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+                    const buf = await blob.arrayBuffer();
+                    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+                    const parts = [];
+                    const max = Math.min(pdf.numPages, 40);
+                    for (let i = 1; i <= max; i++) {
+                        const page = await pdf.getPage(i);
+                        const content = await page.getTextContent();
+                        parts.push(content.items.map(it => it.str).join(' '));
+                    }
+                    return parts.join('\n').replace(/\s+/g, ' ').trim();
+                } catch (e) {
+                    console.warn('[AI] pdf', e);
+                    return '';
+                }
+            },
+
+            async extractOcr(blob) {
+                if (!window.Tesseract) return '';
+                try {
+                    const { data: res } = await Tesseract.recognize(blob, 'spa+eng', { logger: () => {} });
+                    return (res?.text || '').replace(/\s+/g, ' ').trim();
+                } catch (e) {
+                    console.warn('[AI] ocr', e);
+                    return '';
+                }
+            },
+
+            async fetchBlob(url) {
+                try {
+                    const res = await fetch(url, { mode: 'cors' });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    return await res.blob();
+                } catch (e) {
+                    console.warn('[AI] fetch', url, e);
+                    return null;
+                }
+            },
+
+            async indexDoc(doc, force) {
+                if (!doc || doc.id == null) return '';
+                const cache = this.getCache();
+                const key = String(doc.id);
+                if (!force && cache[key] && cache[key].text) return cache[key].text;
+
+                let fileText = '';
+                let source = 'meta';
+                const link = (doc.hipervinculo || '').trim();
+                if (link && /^https?:\/\//i.test(link)) {
+                    const blob = await this.fetchBlob(link);
+                    if (blob) {
+                        const name = (link.split('?')[0].split('/').pop() || '').toLowerCase();
+                        const type = (blob.type || '').toLowerCase();
+                        if (type.includes('pdf') || name.endsWith('.pdf')) {
+                            fileText = await this.extractPdf(blob);
+                            source = fileText ? 'pdf' : 'pdf-empty';
+                        } else if (type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) {
+                            fileText = await this.extractOcr(blob);
+                            source = 'ocr';
+                        } else if (type.startsWith('text/') || name.endsWith('.txt') || name.endsWith('.csv') || name.endsWith('.md')) {
+                            fileText = await blob.text();
+                            source = 'text';
+                        } else if (type.includes('html') || name.endsWith('.html')) {
+                            fileText = this.htmlToText(await blob.text());
+                            source = 'html';
+                        }
+                    }
+                }
+                const text = (this.metaText(doc) + ' ' + fileText).replace(/\s+/g, ' ').trim();
+                cache[key] = { text, source, at: Date.now(), nom: doc.nomenclatura || '' };
+                this.setCache(cache);
+                return text;
+            },
+
+            tokenize(s) {
+                return String(s || '')
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .split(/[^a-z0-9áéíóúñü]+/i)
+                    .filter(w => w.length > 2);
+            },
+
+            score(text, terms) {
+                const low = String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                let score = 0;
+                const excerpts = [];
+                for (const t of terms) {
+                    let idx = 0, hits = 0;
+                    while ((idx = low.indexOf(t, idx)) !== -1) { hits++; idx += t.length; }
+                    if (hits) {
+                        score += hits * (t.length > 5 ? 2 : 1);
+                        const pos = low.indexOf(t);
+                        if (pos >= 0) {
+                            const a = Math.max(0, pos - 70);
+                            const b = Math.min(text.length, pos + t.length + 110);
+                            excerpts.push(String(text).slice(a, b).trim());
+                        }
+                    }
+                }
+                return { score, excerpts: [...new Set(excerpts)].slice(0, 3) };
+            },
+
+            async search(question, limit) {
+                const terms = this.tokenize(question);
+                if (!terms.length) return [];
+                const docs = this.scopedDocs();
+                const hits = [];
+                for (const doc of docs) {
+                    let text = '';
+                    try { text = await this.indexDoc(doc, false); } catch (e) { text = this.metaText(doc); }
+                    const { score, excerpts } = this.score(text, terms);
+                    if (score > 0) {
+                        hits.push({
+                            doc,
+                            score,
+                            excerpts,
+                            doc_id: doc.id,
+                            nomenclatura: doc.nomenclatura,
+                            nombre: doc.nombre,
+                            hipervinculo: doc.hipervinculo
+                        });
+                    }
+                }
+                hits.sort((a, b) => b.score - a.score);
+                return hits.slice(0, limit || 8);
+            },
+
+            buildLocalAnswer(q, hits) {
+                if (!hits.length) {
+                    return 'No encontré coincidencias en los documentos visibles de la matriz.\n\nPrueba otras palabras o pulsa reindexar (icono base de datos) si hay archivos nuevos en Supabase.';
+                }
+                const lines = [`Encontré ${hits.length} documento(s) para: “${q}”.\n`];
+                hits.forEach((h, i) => {
+                    const label = [h.nomenclatura, h.nombre].filter(Boolean).join(' · ') || ('ID ' + h.doc_id);
+                    lines.push(`${i + 1}. ${label}`);
+                    (h.excerpts || []).forEach(ex => lines.push(`   «…${ex}…»`));
+                    lines.push('');
+                });
+                lines.push('Pulsa una cita para abrir el hipervínculo (si existe).');
+                return lines.join('\n');
+            },
+
+            async answerWithGemini(q, hits) {
+                const key = this.getGeminiKey();
+                if (!key) return null;
+                const context = hits.map((h, i) => {
+                    const label = [h.nomenclatura, h.nombre].filter(Boolean).join(' ') || h.doc_id;
+                    const body = (h.excerpts || []).join('\n') || this.metaText(h.doc).slice(0, 800);
+                    return `[#${i + 1}] ${label}\n${body}`;
+                }).join('\n\n---\n\n');
+                const prompt = 'Eres el asistente de la Matriz de Documentación Normativa. Responde en español solo con el contexto. Si no está, dilo. Cita con [#n].\n\n'
+                    + (context ? `Contexto:\n${context}\n\n` : 'Sin contexto.\n\n')
+                    + `Pregunta: ${q}`;
+                const model = this.getGeminiModel();
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+                    })
+                });
+                const dataJson = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(dataJson?.error?.message || 'Error Gemini');
+                return (dataJson?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '').trim() || null;
+            },
+
+            open() {
+                const p = document.getElementById('aiPanel');
+                if (!p) return;
+                p.classList.remove('hidden');
+                const k = document.getElementById('aiGeminiKey');
+                const m = document.getElementById('aiGeminiModel');
+                if (k && !k.value) k.value = localStorage.getItem(this.GEM_KEY) || '';
+                if (m) m.value = localStorage.getItem(this.GEM_MODEL) || 'gemini-3.5-flash-lite';
+                setTimeout(() => document.getElementById('aiInput')?.focus(), 40);
+            },
+            close() { document.getElementById('aiPanel')?.classList.add('hidden'); },
+            toggle() {
+                const p = document.getElementById('aiPanel');
+                if (!p) return;
+                if (p.classList.contains('hidden')) this.open(); else this.close();
+            },
+            clear() {
+                this.history = [];
+                const box = document.getElementById('aiMsgs');
+                if (box) {
+                    box.innerHTML = '<div class="ai-empty" id="aiEmpty"><strong>Búsqueda Inteligente en la Matriz Docmental</strong>Plantea tu duda con tus propias palabras. Olvídate de recordar títulos o términos exactos: solo pregunta y listo.</div>';
+                }
+            },
+            appendMsg(role, text, citations) {
+                const box = document.getElementById('aiMsgs');
+                if (!box) return;
+                document.getElementById('aiEmpty')?.remove();
+                const el = document.createElement('div');
+                el.className = 'ai-msg ' + (role === 'user' ? 'user' : role === 'err' ? 'err' : 'bot');
+                el.textContent = text;
+                if (citations && citations.length) {
+                    const cites = document.createElement('div');
+                    cites.className = 'cites';
+                    citations.forEach((c, i) => {
+                        const b = document.createElement('button');
+                        b.type = 'button';
+                        b.className = 'cite';
+                        const label = [c.nomenclatura, c.nombre].filter(Boolean).join(' · ') || ('Doc ' + c.doc_id);
+                        b.textContent = '#' + (i + 1) + ' ' + label;
+                        b.title = (c.excerpts && c.excerpts[0]) || '';
+                        b.addEventListener('click', () => {
+                            if (c.hipervinculo) {
+                                let url = c.hipervinculo;
+                                if (!/^https?:\/\//i.test(url) && !url.startsWith('blob:')) url = 'https://' + url;
+                                window.open(url, '_blank', 'noopener,noreferrer');
+                            } else if (typeof openEditModal === 'function' && c.doc_id != null) {
+                                try { openEditModal(c.doc_id); } catch (e) {}
+                            } else {
+                                showToast('Sin hipervínculo en este documento', 'warning');
+                            }
+                        });
+                        cites.appendChild(b);
+                    });
+                    el.appendChild(cites);
+                }
+                box.appendChild(el);
+                box.scrollTop = box.scrollHeight;
+            },
+
+            async reindexAll() {
+                const docs = this.scopedDocs();
+                if (!docs.length) {
+                    showToast('No hay documentos visibles', 'warning');
+                    return;
+                }
+                showToast('Indexando ' + docs.length + ' documento(s)…', 'info');
+                let n = 0;
+                for (const d of docs) {
+                    await this.indexDoc(d, true);
+                    n++;
+                }
+                showToast('Indexados ' + n + ' documento(s)', 'success');
+            },
+
+            async send() {
+                if (this.busy) return;
+                const input = document.getElementById('aiInput');
+                const q = (input?.value || '').trim();
+                if (!q) return;
+                this.saveGeminiPrefs();
+                input.value = '';
+                this.appendMsg('user', q);
+                this.busy = true;
+                document.getElementById('aiTyping')?.classList.remove('hidden');
+                document.getElementById('aiSend')?.setAttribute('disabled', 'true');
+                try {
+                    const hits = await this.search(q, 8);
+                    let answer = null;
+                    if (this.getGeminiKey()) {
+                        try { answer = await this.answerWithGemini(q, hits); }
+                        catch (e) {
+                            this.appendMsg('err', 'Gemini no disponible: ' + (e.message || e) + '. Uso respuesta local.');
+                        }
+                    }
+                    if (!answer) answer = this.buildLocalAnswer(q, hits);
+                    this.appendMsg('bot', answer, hits);
+                } catch (e) {
+                    this.appendMsg('err', String(e.message || e));
+                } finally {
+                    this.busy = false;
+                    document.getElementById('aiTyping')?.classList.add('hidden');
+                    document.getElementById('aiSend')?.removeAttribute('disabled');
+                }
+            },
+
+            bind() {
+                const fab = document.getElementById('aiFab');
+                if (!fab || fab.dataset.bound === '1') return;
+                fab.dataset.bound = '1';
+                fab.addEventListener('click', () => this.toggle());
+                document.getElementById('aiClose')?.addEventListener('click', () => this.close());
+                document.getElementById('aiClear')?.addEventListener('click', () => this.clear());
+                document.getElementById('aiReindex')?.addEventListener('click', () => this.reindexAll());
+                document.getElementById('aiSend')?.addEventListener('click', () => this.send());
+                document.getElementById('aiInput')?.addEventListener('keydown', e => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); }
+                });
+                document.getElementById('aiGeminiKey')?.addEventListener('change', () => this.saveGeminiPrefs());
+                document.getElementById('aiGeminiModel')?.addEventListener('change', () => this.saveGeminiPrefs());
+            },
+
+            syncFab() {
+                const fab = document.getElementById('aiFab');
+                const app = document.getElementById('appContainer');
+                const visible = !!(app && app.style.display !== 'none');
+                if (fab) {
+                    if (visible) fab.classList.remove('hidden');
+                    else { fab.classList.add('hidden'); this.close(); }
+                }
+                this.bind();
+            }
+        };
+        window.MatrizAI = MatrizAI;
+
         initDupCheckModal();
-        initializeApp();
+        initializeApp().then(() => { try { MatrizAI.syncFab(); } catch (e) {} });
+        // Re-sincronizar FAB tras login exitoso si la app ya estaba montada
+        const _aiObs = new MutationObserver(() => { try { MatrizAI.syncFab(); } catch (e) {} });
+        try {
+            const ac = document.getElementById('appContainer');
+            if (ac) _aiObs.observe(ac, { attributes: true, attributeFilter: ['style', 'class'] });
+        } catch (e) {}
+
     </script>
 
     <div style="display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-color);">
@@ -10742,5 +11221,51 @@ function getFilteredData() {
             <span style="font-size: 0.4rem; color: #94a3b8; font-weight: 500;">V1.0 | Septiembre 2026</span>
         </div>
     </div>
+
+    <!-- Asistente IA documental (solo UI adicional) -->
+
+    <!-- Modal config Asistente IA -->
+    <div class="modal-overlay" id="aiConfigModal" onclick="if(event.target===this)closeAiConfigModal()">
+        <div class="modal" style="max-width:420px;width:100%;" onclick="event.stopPropagation()">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h3 style="font-size:15px;margin:0;"><i class="fas fa-robot" style="color:var(--blue);"></i> Configurar Asistente IA</h3>
+                <button type="button" class="btn btn-sm" onclick="closeAiConfigModal()"><i class="fas fa-times"></i></button>
+            </div>
+            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">Opcional. Sin API key el chat usa solo búsqueda local. Puedes usar la misma clave AIza… de Google AI Studio que en Cyper.</p>
+            <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;">API key Gemini (AIza…)</label>
+            <input type="password" id="aiGeminiKey" class="filter-select" style="width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:12px;margin-bottom:10px;" placeholder="AIza…" autocomplete="off"/>
+            <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;">Modelo</label>
+            <input type="text" id="aiGeminiModel" class="filter-select" style="width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:12px;" placeholder="gemini-3.5-flash-lite" value="gemini-3.5-flash-lite"/>
+            <p style="font-size:10px;color:var(--text-secondary);margin-top:8px;">Obtén la key en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Modelo recomendado: gemini-3.5-flash-lite</p>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+                <button type="button" class="btn btn-sm" onclick="closeAiConfigModal()">Cancelar</button>
+                <button type="button" class="btn btn-sm btn-primary" onclick="saveAiConfigModal()"><i class="fas fa-save"></i> Guardar</button>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" class="ai-fab hidden" id="aiFab" title="Asistente documental" aria-label="Asistente documental">
+        <i class="fas fa-comments"></i> <span>IA</span>
+    </button>
+    <div class="ai-panel hidden" id="aiPanel" role="dialog" aria-label="Chat IA">
+        <div class="ai-head">
+            <div style="flex:1;min-width:0">
+                <strong>Asistente documental</strong>
+                <span class="tiny">OCR + IA</span>
+            </div>
+            <button type="button" class="ai-icon-btn" id="aiReindex" title="Reindexar"><i class="fas fa-database"></i></button>
+            <button type="button" class="ai-icon-btn" id="aiClear" title="Nueva conversación"><i class="fas fa-rotate-left"></i></button>
+            <button type="button" class="ai-icon-btn" id="aiClose" title="Cerrar"><i class="fas fa-xmark"></i></button>
+        </div>
+        <div class="ai-msgs" id="aiMsgs">
+            <div class="ai-empty" id="aiEmpty"><strong>Búsqueda Inteligente en la Matriz Documental</strong>Plantea tu duda con tus propias palabras. Olvídate de recordar títulos o términos exactos: solo pregunta y listo.</div>
+        </div>
+        <div class="ai-typing hidden" id="aiTyping">Analizando documentos…</div>
+        <div class="ai-foot">
+            <textarea id="aiInput" rows="1" placeholder="Ej. conflictos de interés" maxlength="2000"></textarea>
+            <button type="button" class="btn-send" id="aiSend"><i class="fas fa-paper-plane"></i></button>
+        </div>
+    </div>
+
 </body>
 </html>
