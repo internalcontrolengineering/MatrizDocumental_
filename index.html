@@ -6149,6 +6149,7 @@
                     await initGeneralAccessConfig();
                     renderAll();
                     setupRealtimeSync();
+                    try { await loadAiConfigFromSupabase(); } catch (e) {}
                     try { window.MatrizAI && MatrizAI.syncFab(); } catch (e) {}
                 } catch (err) {
                     console.error(err);
@@ -6312,6 +6313,7 @@
                 applyViewOnlyMode();
                 renderAll();
                 setupRealtimeSync();
+                try { await loadAiConfigFromSupabase(); } catch (e) {}
                 try { window.MatrizAI && MatrizAI.syncFab(); } catch (e) {}
             } else {
                 showLogin();
@@ -10817,26 +10819,82 @@ function getFilteredData() {
         // ASISTENTE IA (búsqueda + OCR) — no modifica el resto del flujo
         // ============================================================
 
+        async function loadAiConfigFromSupabase() {
+            try {
+                const { data: rows, error } = await supabaseClient.from('meta').select('*').eq('key', 'aiGeminiConfig').limit(1);
+                if (error) throw error;
+                const row = rows && rows[0];
+                if (!row || !row.value_text) return null;
+                const cfg = typeof row.value_text === 'string' ? JSON.parse(row.value_text) : row.value_text;
+                if (cfg && typeof cfg === 'object') {
+                    if (cfg.apiKey != null) localStorage.setItem('matriz_ai_gemini_key', String(cfg.apiKey || ''));
+                    if (cfg.model != null) localStorage.setItem('matriz_ai_gemini_model', String(cfg.model || 'gemini-3.5-flash-lite'));
+                    return cfg;
+                }
+            } catch (e) {
+                console.warn('[AI] No se pudo cargar config desde Supabase:', e);
+            }
+            return null;
+        }
+        async function saveAiConfigToSupabase(apiKey, model) {
+            const payload = {
+                apiKey: (apiKey || '').trim(),
+                model: (model || 'gemini-3.5-flash-lite').trim() || 'gemini-3.5-flash-lite',
+                updatedAt: Date.now()
+            };
+            localStorage.setItem('matriz_ai_gemini_key', payload.apiKey);
+            localStorage.setItem('matriz_ai_gemini_model', payload.model);
+            try {
+                const { error } = await supabaseClient.from('meta').upsert(
+                    { key: 'aiGeminiConfig', value: Date.now(), value_text: JSON.stringify(payload) },
+                    { onConflict: 'key' }
+                );
+                if (error) {
+                    await supabaseClient.from('meta').delete().eq('key', 'aiGeminiConfig');
+                    const ins = await supabaseClient.from('meta').insert({
+                        key: 'aiGeminiConfig', value: Date.now(), value_text: JSON.stringify(payload)
+                    });
+                    if (ins.error) throw ins.error;
+                }
+                return true;
+            } catch (e) {
+                console.error('[AI] Error guardando config en Supabase:', e);
+                throw e;
+            }
+        }
         function openAiConfigModal() {
             const m = document.getElementById('aiConfigModal');
             if (!m) return;
-            const k = document.getElementById('aiGeminiKey');
-            const mod = document.getElementById('aiGeminiModel');
-            if (k) k.value = localStorage.getItem('matriz_ai_gemini_key') || '';
-            if (mod) mod.value = localStorage.getItem('matriz_ai_gemini_model') || 'gemini-3.5-flash-lite';
+            const fill = () => {
+                const k = document.getElementById('aiGeminiKey');
+                const mod = document.getElementById('aiGeminiModel');
+                if (k) k.value = localStorage.getItem('matriz_ai_gemini_key') || '';
+                if (mod) mod.value = localStorage.getItem('matriz_ai_gemini_model') || 'gemini-3.5-flash-lite';
+            };
+            fill();
             m.classList.add('active');
+            loadAiConfigFromSupabase().then(() => fill()).catch(() => {});
         }
         function closeAiConfigModal() {
             document.getElementById('aiConfigModal')?.classList.remove('active');
         }
-        function saveAiConfigModal() {
+        async function saveAiConfigModal() {
             const k = document.getElementById('aiGeminiKey');
             const mod = document.getElementById('aiGeminiModel');
-            if (k) localStorage.setItem('matriz_ai_gemini_key', k.value.trim());
-            if (mod) localStorage.setItem('matriz_ai_gemini_model', (mod.value.trim() || 'gemini-3.5-flash-lite'));
-            try { window.MatrizAI && MatrizAI.saveGeminiPrefs(); } catch (e) {}
-            closeAiConfigModal();
-            if (typeof showToast === 'function') showToast('Configuración del asistente guardada', 'success');
+            const apiKey = k ? k.value.trim() : '';
+            const model = mod ? (mod.value.trim() || 'gemini-3.5-flash-lite') : 'gemini-3.5-flash-lite';
+            try {
+                await saveAiConfigToSupabase(apiKey, model);
+                try { window.MatrizAI && MatrizAI.saveGeminiPrefs(); } catch (e) {}
+                closeAiConfigModal();
+                if (typeof showToast === 'function') showToast('Configuración del asistente guardada (todos los dispositivos)', 'success');
+            } catch (e) {
+                // Fallback local si falla red
+                localStorage.setItem('matriz_ai_gemini_key', apiKey);
+                localStorage.setItem('matriz_ai_gemini_model', model);
+                closeAiConfigModal();
+                if (typeof showToast === 'function') showToast('Guardado solo en este navegador (no se pudo sincronizar con Supabase)', 'warning');
+            }
         }
 
         const MatrizAI = {
@@ -11083,7 +11141,7 @@ function getFilteredData() {
                 this.history = [];
                 const box = document.getElementById('aiMsgs');
                 if (box) {
-                    box.innerHTML = '<div class="ai-empty" id="aiEmpty"><strong>Búsqueda Inteligente en la Matriz Docmental</strong>Plantea tu duda con tus propias palabras. Olvídate de recordar títulos o términos exactos: solo pregunta y listo.</div>';
+                    box.innerHTML = '<div class="ai-empty" id="aiEmpty"><strong>¿En qué política se habla de…?</strong>Busca por palabras en la matriz y en archivos de Supabase.</div>';
                 }
             },
             appendMsg(role, text, citations) {
@@ -11231,7 +11289,7 @@ function getFilteredData() {
                 <h3 style="font-size:15px;margin:0;"><i class="fas fa-robot" style="color:var(--blue);"></i> Configurar Asistente IA</h3>
                 <button type="button" class="btn btn-sm" onclick="closeAiConfigModal()"><i class="fas fa-times"></i></button>
             </div>
-            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">Opcional. Sin API key el chat usa solo búsqueda local. Puedes usar la misma clave AIza… de Google AI Studio que en Cyper.</p>
+            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">Opcional. Se guarda en Supabase y aplica en cualquier dispositivo. Sin key = solo búsqueda local. Misma AIza… de Google AI Studio.</p>
             <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;">API key Gemini (AIza…)</label>
             <input type="password" id="aiGeminiKey" class="filter-select" style="width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:12px;margin-bottom:10px;" placeholder="AIza…" autocomplete="off"/>
             <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;">Modelo</label>
@@ -11251,14 +11309,14 @@ function getFilteredData() {
         <div class="ai-head">
             <div style="flex:1;min-width:0">
                 <strong>Asistente documental</strong>
-                <span class="tiny">OCR + IA</span>
+                <span class="tiny">Busca en la matriz y archivos de Supabase · OCR local · Gemini opcional</span>
             </div>
             <button type="button" class="ai-icon-btn" id="aiReindex" title="Reindexar"><i class="fas fa-database"></i></button>
             <button type="button" class="ai-icon-btn" id="aiClear" title="Nueva conversación"><i class="fas fa-rotate-left"></i></button>
             <button type="button" class="ai-icon-btn" id="aiClose" title="Cerrar"><i class="fas fa-xmark"></i></button>
         </div>
         <div class="ai-msgs" id="aiMsgs">
-            <div class="ai-empty" id="aiEmpty"><strong>Búsqueda Inteligente en la Matriz Documental</strong>Plantea tu duda con tus propias palabras. Olvídate de recordar títulos o términos exactos: solo pregunta y listo.</div>
+            <div class="ai-empty" id="aiEmpty"><strong>¿En qué política se habla de…?</strong>Busca por palabras en nomenclatura, nombre, comentarios y texto de archivos vinculados (PDF/imagen con OCR).</div>
         </div>
         <div class="ai-typing hidden" id="aiTyping">Analizando documentos…</div>
         <div class="ai-foot">
