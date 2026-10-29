@@ -8,6 +8,9 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
@@ -10900,7 +10903,7 @@ function getFilteredData() {
         const MatrizAI = {
             history: [],
             busy: false,
-            CACHE_KEY: 'matriz_ai_text_v1',
+            CACHE_KEY: 'matriz_ai_text_v9',
             GEM_KEY: 'matriz_ai_gemini_key',
             GEM_MODEL: 'matriz_ai_gemini_model',
 
@@ -10911,15 +10914,28 @@ function getFilteredData() {
                 try { localStorage.setItem(this.CACHE_KEY, JSON.stringify(map)); } catch (e) {}
             },
             getGeminiKey() {
-                const el = document.getElementById('aiGeminiKey');
-                if (el && el.value.trim()) return el.value.trim();
-                return (localStorage.getItem(this.GEM_KEY) || '').trim();
+                try {
+                    const el = document.getElementById('aiGeminiKey');
+                    if (el && el.value && el.value.trim()) return el.value.trim();
+                } catch (e) {}
+                try {
+                    const ls = (localStorage.getItem(this.GEM_KEY) || '').trim();
+                    if (ls) return ls;
+                } catch (e) {}
+                return '';
             },
             getGeminiModel() {
-                const el = document.getElementById('aiGeminiModel');
-                const v = (el && el.value.trim()) || localStorage.getItem(this.GEM_MODEL) || 'gemini-3.5-flash-lite';
-                return v.trim() || 'gemini-3.5-flash-lite';
+                try {
+                    const el = document.getElementById('aiGeminiModel');
+                    if (el && el.value && el.value.trim()) return el.value.trim();
+                } catch (e) {}
+                try {
+                    return (localStorage.getItem(this.GEM_MODEL) || 'gemini-3.5-flash-lite').trim() || 'gemini-3.5-flash-lite';
+                } catch (e) {
+                    return 'gemini-3.5-flash-lite';
+                }
             },
+
             saveGeminiPrefs() {
                 const k = document.getElementById('aiGeminiKey');
                 const m = document.getElementById('aiGeminiModel');
@@ -10935,34 +10951,61 @@ function getFilteredData() {
             },
 
             metaText(doc) {
+                const link = String(doc.hipervinculo || '');
+                let host = '';
+                try { if (link) host = new URL(link.startsWith('http') ? link : 'https://' + link).hostname; } catch (e) {}
                 return [
                     doc.nomenclatura, doc.nombre, doc.tipo, doc.categoria, doc.clasificacion,
                     doc.unidad, doc.area, doc.departamento, doc.macro, doc.comentarios,
-                    doc.status, doc.documentoPadre, doc.hipervinculo
+                    doc.status, doc.documentoPadre, link, host,
+                    /supabase\.co\/storage/i.test(link) ? 'almacenamiento supabase' : (link ? 'enlace externo liga' : '')
                 ].filter(Boolean).join(' ');
             },
 
             htmlToText(html) {
+                let s = String(html || '');
+                s = s.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ');
                 const d = document.createElement('div');
-                d.innerHTML = String(html || '');
+                d.innerHTML = s;
                 return (d.innerText || d.textContent || '').replace(/\s+/g, ' ').trim();
             },
 
-            async extractPdf(blob) {
+            async extractPdf(blob, opts) {
+                opts = opts || {};
                 if (!window.pdfjsLib) return '';
                 try {
                     pdfjsLib.GlobalWorkerOptions.workerSrc =
                         'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
                     const buf = await blob.arrayBuffer();
+                    await this.yieldUI(0);
                     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
                     const parts = [];
-                    const max = Math.min(pdf.numPages, 40);
+                    const max = Math.min(pdf.numPages, opts.maxPages || 20);
                     for (let i = 1; i <= max; i++) {
                         const page = await pdf.getPage(i);
                         const content = await page.getTextContent();
                         parts.push(content.items.map(it => it.str).join(' '));
+                        await this.yieldUI(0);
                     }
-                    return parts.join('\n').replace(/\s+/g, ' ').trim();
+                    let text = parts.join('\n').replace(/\s+/g, ' ').trim();
+                    if (!opts.skipOcr && text.length < 60 && window.Tesseract) {
+                        const ocrMax = Math.min(pdf.numPages, opts.ocrPages || 2);
+                        for (let i = 1; i <= ocrMax; i++) {
+                            try {
+                                const page = await pdf.getPage(i);
+                                const viewport = page.getViewport({ scale: 1.15 });
+                                const canvas = document.createElement('canvas');
+                                canvas.width = viewport.width;
+                                canvas.height = viewport.height;
+                                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                                await this.yieldUI(0);
+                                const { data: res } = await Tesseract.recognize(canvas, 'spa+eng', { logger: () => {} });
+                                if (res && res.text) text = (text + ' ' + res.text).replace(/\s+/g, ' ').trim();
+                            } catch (e) {}
+                            await this.yieldUI(20);
+                        }
+                    }
+                    return text;
                 } catch (e) {
                     console.warn('[AI] pdf', e);
                     return '';
@@ -10980,132 +11023,609 @@ function getFilteredData() {
                 }
             },
 
-            async fetchBlob(url) {
+            async extractDocx(blob) {
+                if (!window.mammoth) return '';
                 try {
-                    const res = await fetch(url, { mode: 'cors' });
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
-                    return await res.blob();
+                    const buf = await blob.arrayBuffer();
+                    const res = await mammoth.extractRawText({ arrayBuffer: buf });
+                    return (res && res.value ? res.value : '').replace(/\s+/g, ' ').trim();
                 } catch (e) {
-                    console.warn('[AI] fetch', url, e);
+                    console.warn('[AI] docx', e);
+                    return '';
+                }
+            },
+
+            async extractXlsx(blob) {
+                if (!window.XLSX) return '';
+                try {
+                    const buf = await blob.arrayBuffer();
+                    const wb = XLSX.read(buf, { type: 'array' });
+                    const parts = [];
+                    (wb.SheetNames || []).forEach(name => {
+                        const sheet = wb.Sheets[name];
+                        if (!sheet) return;
+                        parts.push('Hoja: ' + name);
+                        parts.push(XLSX.utils.sheet_to_csv(sheet));
+                    });
+                    return parts.join('\n').replace(/\s+/g, ' ').trim();
+                } catch (e) {
+                    console.warn('[AI] xlsx', e);
+                    return '';
+                }
+            },
+
+            async extractPptx(blob) {
+                if (!window.JSZip) return '';
+                try {
+                    const buf = await blob.arrayBuffer();
+                    const zip = await JSZip.loadAsync(buf);
+                    const texts = [];
+                    const files = Object.keys(zip.files || {}).filter(n =>
+                        /ppt\/slides\/slide\d+\.xml$/i.test(n) || /ppt\/slideMasters\//i.test(n)
+                    ).sort();
+                    for (const name of files.slice(0, 40)) {
+                        const xml = await zip.files[name].async('string');
+                        // texto en <a:t>...</a:t>
+                        const re = /<a:t[^>]*>([^<]*)<\/a:t>/g;
+                        let m;
+                        const slide = [];
+                        while ((m = re.exec(xml))) {
+                            if (m[1] && m[1].trim()) slide.push(m[1].trim());
+                        }
+                        if (slide.length) texts.push(slide.join(' '));
+                    }
+                    return texts.join('\n').replace(/\s+/g, ' ').trim();
+                } catch (e) {
+                    console.warn('[AI] pptx', e);
+                    return '';
+                }
+            },
+
+
+
+
+            yieldUI(ms) {
+                return new Promise(r => setTimeout(r, ms == null ? 16 : ms));
+            },
+
+            /** Normaliza cualquier hipervínculo a URL absoluta http(s) */
+            normalizeLink(raw) {
+                let u = String(raw || '').trim();
+                if (!u) return '';
+                if (u.startsWith('//')) u = 'https:' + u;
+                if (!/^https?:\/\//i.test(u) && /^[\w.-]+\.[a-z]{2,}/i.test(u)) u = 'https://' + u;
+                if (!/^https?:\/\//i.test(u)) return '';
+                return u;
+            },
+
+            /** Si la URL es storage de Supabase, extrae bucket + path */
+            parseSupabaseStorageUrl(url) {
+                try {
+                    const u = new URL(url);
+                    // /storage/v1/object/public/BUCKET/path
+                    // /storage/v1/object/sign/BUCKET/path
+                    // /storage/v1/object/authenticated/BUCKET/path
+                    const m = u.pathname.match(/\/storage\/v1\/object\/(?:public|sign|authenticated)\/([^/]+)\/(.+)/i);
+                    if (!m) return null;
+                    return { bucket: decodeURIComponent(m[1]), path: decodeURIComponent(m[2].split('?')[0]) };
+                } catch (e) {
                     return null;
                 }
             },
 
-            async indexDoc(doc, force) {
+            async fetchBlob(url) {
+                url = this.normalizeLink(url);
+                if (!url) return null;
+
+                // 1) Descarga nativa (Supabase público u orígenes con CORS)
+                try {
+                    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                    const timer = ctrl ? setTimeout(() => ctrl.abort(), 15000) : null;
+                    const res = await fetch(url, { mode: 'cors', signal: ctrl ? ctrl.signal : undefined, redirect: 'follow' });
+                    if (timer) clearTimeout(timer);
+                    if (res.ok) return await res.blob();
+                } catch (e) {
+                    console.warn('[AI] fetch cors', url, e);
+                }
+
+                // 2) Si es Storage de este proyecto Supabase → API del cliente
+                try {
+                    if (typeof supabaseClient !== 'undefined' && supabaseClient) {
+                        const parsed = this.parseSupabaseStorageUrl(url);
+                        if (parsed) {
+                            const { data, error } = await supabaseClient.storage.from(parsed.bucket).download(parsed.path);
+                            if (!error && data) return data;
+                            console.warn('[AI] storage download', error);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[AI] storage', e);
+                }
+
+                // 3) Proxy CORS público (solo lectura de ligas externas bloqueadas)
+                const proxies = [
+                    (u) => 'https://corsproxy.io/?' + encodeURIComponent(u),
+                    (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u)
+                ];
+                for (const make of proxies) {
+                    try {
+                        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                        const timer = ctrl ? setTimeout(() => ctrl.abort(), 18000) : null;
+                        const res = await fetch(make(url), { signal: ctrl ? ctrl.signal : undefined });
+                        if (timer) clearTimeout(timer);
+                        if (res.ok) {
+                            const blob = await res.blob();
+                            if (blob && blob.size > 0) return blob;
+                        }
+                    } catch (e) {
+                        console.warn('[AI] proxy', e);
+                    }
+                    await this.yieldUI(10);
+                }
+                return null;
+            },
+
+            // Cola de indexado en segundo plano
+            _bgQueue: [],
+            _bgRunning: false,
+            enqueueBackgroundIndex(docs) {
+                const cache = this.getCache();
+                for (const doc of (docs || [])) {
+                    if (!doc || doc.id == null) continue;
+                    const link = this.normalizeLink(doc.hipervinculo);
+                    if (!link) continue;
+                    const c = cache[String(doc.id)] || {};
+                    if ((c.full || '').length > 40) continue;
+                    if (this._bgQueue.some(d => d && d.id === doc.id)) continue;
+                    this._bgQueue.push(doc);
+                }
+                this._runBackgroundIndex();
+            },
+            async _runBackgroundIndex() {
+                if (this._bgRunning) return;
+                this._bgRunning = true;
+                try {
+                    while (this._bgQueue.length) {
+                        if (this.busy) { await this.yieldUI(400); continue; }
+                        const doc = this._bgQueue.shift();
+                        try { await this.indexDoc(doc, false, { skipOcr: true, maxPages: 20 }); } catch (e) {}
+                        await this.yieldUI(100);
+                    }
+                } finally {
+                    this._bgRunning = false;
+                }
+            },
+
+            async extractByType(blob, urlName, opts) {
+                opts = opts || {};
+                const skipOcr = opts.skipOcr !== false;
+                const name = (urlName || '').toLowerCase().split('?')[0];
+                const type = ((blob && blob.type) || '').toLowerCase();
+                const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1] || '';
+                const maxPages = opts.maxPages || 20;
+
+                try {
+                    if (type.includes('pdf') || ext === 'pdf') {
+                        return { text: await this.extractPdf(blob, { skipOcr: true, maxPages }), source: 'pdf' };
+                    }
+                    if (type.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'].includes(ext)) {
+                        if (skipOcr) return { text: '', source: 'image-pending-ocr' };
+                        return { text: await this.extractOcr(blob), source: 'ocr' };
+                    }
+                    if (ext === 'docx' || type.includes('wordprocessingml')) {
+                        return { text: await this.extractDocx(blob), source: 'docx' };
+                    }
+                    if (ext === 'doc' || (type.includes('msword') && ext === 'doc')) {
+                        return { text: '', source: 'doc-unsupported' };
+                    }
+                    if (ext === 'csv' || type.includes('csv')) {
+                        return { text: await blob.text(), source: 'csv' };
+                    }
+                    if (['xlsx', 'xls'].includes(ext) || type.includes('spreadsheet') || type.includes('excel')) {
+                        return { text: await this.extractXlsx(blob), source: 'xlsx' };
+                    }
+                    if (ext === 'pptx' || type.includes('presentationml')) {
+                        return { text: await this.extractPptx(blob), source: 'pptx' };
+                    }
+                    if (['txt', 'md', 'json', 'log', 'xml'].includes(ext) || type.startsWith('text/')) {
+                        return { text: await blob.text(), source: 'text' };
+                    }
+                    if (ext === 'html' || ext === 'htm' || type.includes('html')) {
+                        return { text: this.htmlToText(await blob.text()), source: 'html' };
+                    }
+                    if (ext === 'rtf' || type.includes('rtf')) {
+                        const raw = await blob.text();
+                        return { text: raw.replace(/\\[a-z]+\d* ?/gi, ' ').replace(/[{}]/g, ' ').replace(/\s+/g, ' ').trim(), source: 'rtf' };
+                    }
+                    // Sin extensión clara: intentar PDF / texto
+                    if (type === 'application/octet-stream' || !type) {
+                        const head = await blob.slice(0, 5).arrayBuffer();
+                        const sig = new Uint8Array(head);
+                        if (sig[0] === 0x25 && sig[1] === 0x50 && sig[2] === 0x44 && sig[3] === 0x46) {
+                            return { text: await this.extractPdf(blob, { skipOcr: true, maxPages }), source: 'pdf' };
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[AI] extractByType', e);
+                }
+                return { text: '', source: 'unknown' };
+            },
+
+            async indexDoc(doc, force, opts) {
+                opts = opts || {};
                 if (!doc || doc.id == null) return '';
                 const cache = this.getCache();
                 const key = String(doc.id);
-                if (!force && cache[key] && cache[key].text) return cache[key].text;
+                if (!force && cache[key] && (cache[key].full || '').length > 40) {
+                    return cache[key].text || this.metaText(doc);
+                }
+                if (!force && cache[key] && cache[key].triedAt && Date.now() - cache[key].triedAt < 45000 && !(cache[key].full || '').length) {
+                    return cache[key].text || this.metaText(doc);
+                }
 
                 let fileText = '';
                 let source = 'meta';
-                const link = (doc.hipervinculo || '').trim();
-                if (link && /^https?:\/\//i.test(link)) {
-                    const blob = await this.fetchBlob(link);
-                    if (blob) {
-                        const name = (link.split('?')[0].split('/').pop() || '').toLowerCase();
-                        const type = (blob.type || '').toLowerCase();
-                        if (type.includes('pdf') || name.endsWith('.pdf')) {
-                            fileText = await this.extractPdf(blob);
-                            source = fileText ? 'pdf' : 'pdf-empty';
-                        } else if (type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) {
-                            fileText = await this.extractOcr(blob);
-                            source = 'ocr';
-                        } else if (type.startsWith('text/') || name.endsWith('.txt') || name.endsWith('.csv') || name.endsWith('.md')) {
-                            fileText = await blob.text();
-                            source = 'text';
-                        } else if (type.includes('html') || name.endsWith('.html')) {
-                            fileText = this.htmlToText(await blob.text());
-                            source = 'html';
+                const link = this.normalizeLink(doc.hipervinculo);
+                if (link && !opts.metaOnly) {
+                    try {
+                        const blob = await this.fetchBlob(link);
+                        await this.yieldUI(0);
+                        if (blob) {
+                            if (blob.size > 15 * 1024 * 1024) {
+                                source = 'too-large';
+                            } else {
+                                const urlName = link.split('?')[0].split('/').pop() || '';
+                                const extracted = await this.extractByType(blob, urlName, {
+                                    skipOcr: opts.skipOcr !== false,
+                                    maxPages: opts.maxPages || 20
+                                });
+                                fileText = extracted.text || '';
+                                source = extracted.source || 'file';
+                            }
+                        } else {
+                            source = 'fetch-failed';
                         }
+                    } catch (e) {
+                        console.warn('[AI] indexDoc', doc.id, e);
+                        source = 'error';
                     }
                 }
-                const text = (this.metaText(doc) + ' ' + fileText).replace(/\s+/g, ' ').trim();
-                cache[key] = { text, source, at: Date.now(), nom: doc.nomenclatura || '' };
+                await this.yieldUI(0);
+                fileText = this.cleanExtracted ? this.cleanExtracted(fileText) : (fileText || '');
+                const meta = this.metaText(doc);
+                const prev = cache[key] || {};
+                const full = (fileText || prev.full || '').slice(0, 12000);
+                const text = (meta + '\n' + full).replace(/\s+/g, ' ').trim();
+                cache[key] = {
+                    text,
+                    source,
+                    at: Date.now(),
+                    triedAt: Date.now(),
+                    nom: doc.nomenclatura || '',
+                    full,
+                    link: link || ''
+                };
                 this.setCache(cache);
                 return text;
             },
 
-            tokenize(s) {
+
+            async expandQueryWithAI(question) {
+                const key = this.getGeminiKey();
+                if (!key) return question;
+                try {
+                    const model = this.getGeminiModel();
+                    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(key);
+                    const prompt = [
+                        'Eres experto en documentación normativa y recursos humanos en empresas mexicanas.',
+                        'Dada la pregunta del usuario, devuelve UNA sola línea con 12 a 20 palabras clave y sinónimos útiles para buscar en políticas y procedimientos.',
+                        'Incluye equivalencias semánticas (ej. despido → desincorporación, rescisión, finiquito, baja de personal).',
+                        'Sin numeración, sin explicaciones, solo palabras separadas por espacios.',
+                        'Pregunta: ' + question
+                    ].join('\n');
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                            generationConfig: { temperature: 0.2, maxOutputTokens: 120 }
+                        })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) return question;
+                    const text = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts)
+                        ? data.candidates[0].content.parts.map(function(p) { return p.text || ''; }).join(' ').trim()
+                        : '';
+                    return text ? (question + ' ' + text) : question;
+                } catch (e) {
+                    console.warn('[AI] expandQuery', e);
+                    return question;
+                }
+            },
+
+            async search(question, limit, onProgress) {
+                const terms = this.tokenize(question);
+                if (!terms.length) return [];
+                const docs = this.scopedDocs();
+                const limitN = limit || 8;
+                const report = (msg) => { try { if (onProgress) onProgress(msg); } catch (e) {} };
+
+                // Fase A: todos (meta + caché) — liga externa y Supabase por igual
+                report('Revisando ' + docs.length + ' documento(s) (ligas y Supabase)…');
+                let hits = [];
+                for (let i = 0; i < docs.length; i++) {
+                    const doc = docs[i];
+                    const cache = this.getCache()[String(doc.id)] || {};
+                    const text = cache.text || this.metaText(doc);
+                    const title = [doc.nomenclatura, doc.nombre, doc.tipo, doc.area, doc.departamento].filter(Boolean).join(' ');
+                    const { score, excerpts } = this.score(text, title, terms);
+                    const link = this.normalizeLink(doc.hipervinculo);
+                    hits.push({
+                        doc, score, excerpts,
+                        doc_id: doc.id,
+                        nomenclatura: doc.nomenclatura,
+                        nombre: doc.nombre,
+                        hipervinculo: link || doc.hipervinculo,
+                        isSupabase: !!(link && /supabase\.co\/storage/i.test(link)),
+                        snippet: (excerpts && excerpts[0]) || this.metaText(doc).slice(0, 220)
+                    });
+                    if (i % 40 === 0) await this.yieldUI(0);
+                }
+                hits.sort((a, b) => b.score - a.score);
+
+                // Fase B: leer archivos de los mejores (mezcla ligas + storage), máx 8
+                const toFetch = [];
+                for (const h of hits) {
+                    if (toFetch.length >= 8) break;
+                    const link = this.normalizeLink(h.hipervinculo);
+                    if (!link) continue;
+                    const cache = this.getCache()[String(h.doc_id)] || {};
+                    if ((cache.full || '').length > 40) continue;
+                    if (h.score >= 0.4 || toFetch.length < 5) toFetch.push(h);
+                }
+                // Garantizar variedad: si solo hay supabase en toFetch, añadir mejores con liga externa sin cuerpo
+                const hasExt = toFetch.some(h => h.hipervinculo && !/supabase\.co\/storage/i.test(h.hipervinculo));
+                if (!hasExt) {
+                    for (const h of hits) {
+                        if (toFetch.length >= 8) break;
+                        const link = this.normalizeLink(h.hipervinculo);
+                        if (!link || /supabase\.co\/storage/i.test(link)) continue;
+                        const cache = this.getCache()[String(h.doc_id)] || {};
+                        if ((cache.full || '').length > 40) continue;
+                        if (!toFetch.includes(h)) toFetch.push(h);
+                    }
+                }
+
+                for (let i = 0; i < toFetch.length; i++) {
+                    const h = toFetch[i];
+                    const kind = h.isSupabase ? 'Supabase' : 'liga';
+                    report('Leyendo ' + kind + ' ' + (i + 1) + '/' + toFetch.length + '…');
+                    try {
+                        const text = await this.indexDoc(h.doc, false, { skipOcr: true, maxPages: 20 });
+                        await this.yieldUI(20);
+                        const title = [h.nomenclatura, h.nombre].filter(Boolean).join(' ');
+                        const r = this.score(text, title, terms);
+                        h.score = r.score;
+                        h.excerpts = r.excerpts;
+                        h.snippet = (r.excerpts && r.excerpts[0]) || h.snippet;
+                    } catch (e) { console.warn('[AI] deepen', e); }
+                    await this.yieldUI(30);
+                }
+
+                // OCR puntual (máx 2)
+                hits.sort((a, b) => b.score - a.score);
+                let ocrDone = 0;
+                for (const h of hits.slice(0, 10)) {
+                    if (ocrDone >= 2) break;
+                    const cache = this.getCache()[String(h.doc_id)] || {};
+                    if ((cache.full || '').length >= 40) continue;
+                    if (!this.normalizeLink(h.hipervinculo)) continue;
+                    if (h.score < 0.8) continue;
+                    report('OCR ' + (ocrDone + 1) + '…');
+                    try {
+                        const text = await this.indexDoc(h.doc, true, { skipOcr: false, maxPages: 8 });
+                        const title = [h.nomenclatura, h.nombre].filter(Boolean).join(' ');
+                        const r = this.score(text, title, terms);
+                        h.score = r.score;
+                        h.excerpts = r.excerpts;
+                    } catch (e) {}
+                    ocrDone++;
+                    await this.yieldUI(40);
+                }
+
+                this.enqueueBackgroundIndex(docs);
+                hits.sort((a, b) => b.score - a.score);
+                const filtered = hits.filter(h => h.score >= 0.7);
+                const top = (filtered.length ? filtered : hits).slice(0, limitN);
+                if (!top.length) return [];
+                const best = top[0].score || 1;
+                return top.filter(h => h.score >= best * 0.12 || h.score >= 3).slice(0, limitN);
+            },
+
+
+            normalize(s) {
                 return String(s || '')
                     .toLowerCase()
                     .normalize('NFD')
                     .replace(/[\u0300-\u036f]/g, '')
-                    .split(/[^a-z0-9áéíóúñü]+/i)
-                    .filter(w => w.length > 2);
+                    .replace(/[^\w\sáéíóúñü]/gi, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
             },
 
-            score(text, terms) {
-                const low = String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            STOP: null,
+            _stopSet() {
+                if (this.STOP) return this.STOP;
+                this.STOP = new Set(('a al algo algunas algunos ante aquel aquella aquellas aquellos aqui arriba atras aun aunque bajo bien cada casi como con contra cual cuales cualquier cuando de del desde donde dos el ella ellas ellos en entre era erais eramos eran eres es esa esas ese eso esos esta estaba estabais estabamos estaban estas este esto estos estoy etc fue fui fuimos fueron ha habeis haber habia habian hacer hacia hasta hay haya he hemos hice hicieron hizo hoy la las le les lo los luego mas me mi mia mias mio mios mis mucho muchos muy nada ni no nos nosotros nuestra nuestras nuestro nuestros o os otra otras otro otros para pero poco por porque que quedo se sea seamos sean segun ser sera seran si sido siempre sin sobre sois solamente solo somos son soy su sus suya suyas suyo suyos tal tambien tampoco tan tanta tantas tanto tantos te tiene tienen tengo ti tuvo un una unas uno unos usted ustedes va vamos van varias varios vaya verdad vosotros y ya yo documento documentos habla hablan alguna algunos algun').split(/\s+/));
+                return this.STOP;
+            },
+
+            SYN: {
+                despido: ['desincorporacion', 'desincorporar', 'rescision', 'rescindir', 'terminacion', 'baja', 'finiquito', 'liquidacion', 'separacion', 'cese', 'renuncia', 'contrato', 'laboral'],
+                despidos: ['desincorporacion', 'rescision', 'bajas', 'finiquitos', 'terminacion', 'separacion'],
+                rescision: ['despido', 'desincorporacion', 'terminacion', 'finiquito', 'contrato', 'laboral', 'rescindir'],
+                resicion: ['rescision', 'despido', 'desincorporacion', 'finiquito'],
+                desincorporacion: ['despido', 'rescision', 'baja', 'finiquito', 'terminacion', 'personal', 'empleado'],
+                personal: ['colaborador', 'empleado', 'trabajador', 'recursos humanos', 'rh'],
+                archivar: ['archivo', 'archivos', 'resguardo', 'resguardar', 'custodia', 'bodega', 'almacen', 'almacenaje', 'expediente', 'expedientes'],
+                archivo: ['archivos', 'archivar', 'resguardo', 'bodega', 'almacen', 'archivo general', 'archivo muerto'],
+                bodega: ['archivo', 'almacen', 'resguardo', 'archivo muerto', 'entarimado'],
+                resguardo: ['archivo', 'custodia', 'conservacion', 'almacenaje', 'bodega'],
+                prestamo: ['devolucion', 'expediente', 'prestamo de documentos'],
+                vacaciones: ['descanso', 'ausencia', 'permiso', 'dias de vacaciones'],
+                nomina: ['sueldo', 'salario', 'pago', 'recibo de nomina', 'percepciones'],
+                confidencial: ['reservado', 'interno', 'proteccion de datos', 'privacidad'],
+                politica: ['politicas', 'lineamientos', 'norma', 'normativa', 'procedimiento'],
+                procedimiento: ['proceso', 'instructivo', 'politica', 'lineamientos'],
+                compra: ['adquisicion', 'proveedor', 'orden de compra', 'suministro'],
+                inventario: ['existencias', 'stock', 'conteo', 'almacen'],
+                seguridad: ['proteccion', 'vigilancia', 'acceso', 'riesgo'],
+                capacitacion: ['entrenamiento', 'formacion', 'curso', 'induccion']
+            },
+
+            tokenize(s) {
+                const norm = this.normalize(s);
+                const raw = norm.split(/\s+/).filter(Boolean);
+                const stop = this._stopSet();
+                const terms = [];
+                for (const w of raw) {
+                    if (w.length < 3) continue;
+                    if (stop.has(w)) continue;
+                    if (/^\d+$/.test(w)) continue;
+                    terms.push(w);
+                    const syns = this.SYN[w];
+                    if (syns) syns.forEach(x => terms.push(this.normalize(x)));
+                }
+                for (let i = 0; i < raw.length - 1; i++) {
+                    const a = raw[i], b = raw[i + 1];
+                    if (stop.has(a) || stop.has(b)) continue;
+                    if (a.length < 3 || b.length < 3) continue;
+                    terms.push(a + ' ' + b);
+                }
+                return [...new Set(terms)];
+            },
+
+            isJunkText(text) {
+                if (!text || text.length < 40) return true;
+                const t = text.slice(0, 4000);
+                const codeSignals = (t.match(/[{};<>]|function\s|const\s|var\s|\.css|px;|@media|checkbox|onclick|localStorage|supabase/gi) || []).length;
+                const words = t.split(/\s+/).length || 1;
+                return codeSignals > 25 || codeSignals / words > 0.08;
+            },
+
+            cleanExtracted(text) {
+                let t = String(text || '');
+                t = t.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+                    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+                    .replace(/<[^>]+>/g, ' ')
+                    .replace(/&[a-z]+;/gi, ' ')
+                    .replace(/https?:\/\/\S+/gi, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                if (this.isJunkText(t)) return '';
+                return t;
+            },
+
+            score(text, titleText, terms) {
+                const body = this.normalize(text);
+                const title = this.normalize(titleText);
+                if (!body && !title) return { score: 0, excerpts: [] };
                 let score = 0;
                 const excerpts = [];
+                const found = new Set();
                 for (const t of terms) {
-                    let idx = 0, hits = 0;
-                    while ((idx = low.indexOf(t, idx)) !== -1) { hits++; idx += t.length; }
-                    if (hits) {
-                        score += hits * (t.length > 5 ? 2 : 1);
-                        const pos = low.indexOf(t);
-                        if (pos >= 0) {
-                            const a = Math.max(0, pos - 70);
-                            const b = Math.min(text.length, pos + t.length + 110);
-                            excerpts.push(String(text).slice(a, b).trim());
+                    const isPhrase = t.includes(' ');
+                    const weight = isPhrase ? 6 : (t.length > 7 ? 3 : t.length > 4 ? 2 : 1);
+                    let hitsBody = 0;
+                    let idx = 0;
+                    while ((idx = body.indexOf(t, idx)) !== -1) {
+                        hitsBody++;
+                        idx += t.length;
+                        if (hitsBody === 1) {
+                            const orig = String(text);
+                            const low = this.normalize(orig);
+                            const pos = low.indexOf(t);
+                            if (pos >= 0) {
+                                const ratio = orig.length / Math.max(low.length, 1);
+                                const p0 = Math.max(0, Math.floor(pos * ratio) - 80);
+                                const p1 = Math.min(orig.length, Math.floor((pos + t.length) * ratio) + 140);
+                                let ex = orig.slice(p0, p1).replace(/\s+/g, ' ').trim();
+                                if (ex.length > 30 && !this.isJunkText(ex)) excerpts.push(ex);
+                            }
                         }
+                        if (hitsBody >= 8) break;
+                    }
+                    let hitsTitle = 0;
+                    idx = 0;
+                    while ((idx = title.indexOf(t, idx)) !== -1) { hitsTitle++; idx += t.length; }
+                    if (hitsBody || hitsTitle) {
+                        found.add(t);
+                        score += hitsBody * weight + hitsTitle * weight * 4;
                     }
                 }
+                const coverage = found.size / Math.max(terms.length, 1);
+                score *= (0.35 + 0.65 * Math.min(1, coverage * 1.4));
+                if (this.isJunkText(text)) score *= 0.05;
                 return { score, excerpts: [...new Set(excerpts)].slice(0, 3) };
             },
 
-            async search(question, limit) {
-                const terms = this.tokenize(question);
-                if (!terms.length) return [];
-                const docs = this.scopedDocs();
-                const hits = [];
-                for (const doc of docs) {
-                    let text = '';
-                    try { text = await this.indexDoc(doc, false); } catch (e) { text = this.metaText(doc); }
-                    const { score, excerpts } = this.score(text, terms);
-                    if (score > 0) {
-                        hits.push({
-                            doc,
-                            score,
-                            excerpts,
-                            doc_id: doc.id,
-                            nomenclatura: doc.nomenclatura,
-                            nombre: doc.nombre,
-                            hipervinculo: doc.hipervinculo
-                        });
-                    }
-                }
-                hits.sort((a, b) => b.score - a.score);
-                return hits.slice(0, limit || 8);
-            },
 
             buildLocalAnswer(q, hits) {
                 if (!hits.length) {
-                    return 'No encontré coincidencias en los documentos visibles de la matriz.\n\nPrueba otras palabras o pulsa reindexar (icono base de datos) si hay archivos nuevos en Supabase.';
+                    return 'No encontré documentos con suficiente relación semántica a tu pregunta en el índice actual.\n\nPrueba sinónimos (ej. despido / desincorporación / rescisión) o configura Gemini en ☰ para análisis de contexto.';
                 }
-                const lines = [`Encontré ${hits.length} documento(s) para: “${q}”.\n`];
+                const lines = [];
+                lines.push('Resultados por relevancia (incluye sinónimos de dominio):\n');
+                lines.push('Consulta: “' + q + '”\n');
                 hits.forEach((h, i) => {
                     const label = [h.nomenclatura, h.nombre].filter(Boolean).join(' · ') || ('ID ' + h.doc_id);
-                    lines.push(`${i + 1}. ${label}`);
-                    (h.excerpts || []).forEach(ex => lines.push(`   «…${ex}…»`));
+                    lines.push((i + 1) + '. ' + label);
+                    (h.excerpts || []).slice(0, 2).forEach(ex => {
+                        const clean = this.cleanExtracted(ex) || String(ex).replace(/\\s+/g, ' ').trim();
+                        if (clean && clean.length > 40 && !this.isJunkText(clean)) {
+                            lines.push('   «…' + clean.slice(0, 300) + '…»');
+                        }
+                    });
                     lines.push('');
                 });
-                lines.push('Pulsa una cita para abrir el hipervínculo (si existe).');
+                lines.push('Pulsa una cita para abrir el archivo.');
                 return lines.join('\n');
             },
 
             async answerWithGemini(q, hits) {
                 const key = this.getGeminiKey();
                 if (!key) return null;
-                const context = hits.map((h, i) => {
-                    const label = [h.nomenclatura, h.nombre].filter(Boolean).join(' ') || h.doc_id;
-                    const body = (h.excerpts || []).join('\n') || this.metaText(h.doc).slice(0, 800);
+                const cache = this.getCache();
+                const context = hits.slice(0, 10).map((h, i) => {
+                    const label = [h.nomenclatura, h.nombre, h.doc && h.doc.tipo, h.doc && h.doc.area]
+                        .filter(Boolean).join(' · ') || ('ID ' + h.doc_id);
+                    const cached = cache[String(h.doc_id)] || {};
+                    const full = (cached.full || cached.text || '').slice(0, 5500);
+                    const body = full || (h.excerpts || []).join('\n') || this.metaText(h.doc).slice(0, 1200);
                     return `[#${i + 1}] ${label}\n${body}`;
                 }).join('\n\n---\n\n');
-                const prompt = 'Eres el asistente de la Matriz de Documentación Normativa. Responde en español solo con el contexto. Si no está, dilo. Cita con [#n].\n\n'
-                    + (context ? `Contexto:\n${context}\n\n` : 'Sin contexto.\n\n')
-                    + `Pregunta: ${q}`;
+
+                // Catálogo breve de más documentos por si la equivalencia semántica está en el título
+                const catalog = this.scopedDocs().slice(0, 80).map(d => {
+                    return `- ${d.nomenclatura || ''} | ${d.nombre || ''} | ${d.tipo || ''}`;
+                }).join('\n');
+
+                const prompt = [
+                    `Eres un analista documental senior de $Matriz de Documentación Normativa Interna.`,
+                    'Responde en español, como lo haría una IA experta que entiende el CONTEXTO y no solo palabras exactas.',
+                    'Equivalencias: despido≈desincorporación≈rescisión≈finiquito≈baja de personal; archivo≈resguardo≈bodega≈custodia; etc.',
+                    'Si la pregunta usa un término y el documento usa un sinónimo, IGUAL debe vincularlos.',
+                    'Indica el documento principal (nomenclatura + nombre), explica por qué aplica y cita 1–3 frases.',
+                    'Usa referencias [#n] del contexto detallado.',
+                    'Si el catálogo sugiere otro documento no detallado, menciónalo.',
+                    'No digas que configures la API key. No inventes códigos.',
+                    '',
+                    'Contexto detallado:\n' + (context || '(sin extractos de archivo)'),
+                    '',
+                    'Catálogo (nomenclatura | nombre | tipo):\n' + catalog,
+                    '',
+                    'Pregunta: ' + q
+                ].join('\n');
                 const model = this.getGeminiModel();
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
                 const res = await fetch(url, {
@@ -11113,7 +11633,7 @@ function getFilteredData() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                        generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 2048 }
                     })
                 });
                 const dataJson = await res.json().catch(() => ({}));
@@ -11183,16 +11703,19 @@ function getFilteredData() {
             async reindexAll() {
                 const docs = this.scopedDocs();
                 if (!docs.length) {
-                    showToast('No hay documentos visibles', 'warning');
+                    if (typeof showToast === 'function') showToast('No hay documentos visibles', 'warning');
                     return;
                 }
-                showToast('Indexando ' + docs.length + ' documento(s)…', 'info');
-                let n = 0;
-                for (const d of docs) {
-                    await this.indexDoc(d, true);
-                    n++;
+                if (this.busy) {
+                    if (typeof showToast === 'function') showToast('Espera a que termine la consulta', 'warning');
+                    return;
                 }
-                showToast('Indexados ' + n + ' documento(s)', 'success');
+                // Reindex = encolar todo en background (no congelar)
+                this._bgQueue = [];
+                this.enqueueBackgroundIndex(docs);
+                if (typeof showToast === 'function') {
+                    showToast('Indexado en segundo plano iniciado (' + docs.length + ' docs). Puedes seguir usando la app.', 'info');
+                }
             },
 
             async send() {
@@ -11200,29 +11723,55 @@ function getFilteredData() {
                 const input = document.getElementById('aiInput');
                 const q = (input?.value || '').trim();
                 if (!q) return;
+                // Recargar key desde Supabase/local antes de decidir
+                try { if (typeof loadAiConfigFromSupabase === 'function') await loadAiConfigFromSupabase(); } catch (e) {}
                 this.saveGeminiPrefs();
                 input.value = '';
                 this.appendMsg('user', q);
                 this.busy = true;
-                document.getElementById('aiTyping')?.classList.remove('hidden');
+                const typing = document.getElementById('aiTyping');
+                const setTyping = (msg) => {
+                    if (!typing) return;
+                    typing.classList.remove('hidden');
+                    typing.textContent = msg;
+                };
+                const hasKey = !!this.getGeminiKey();
+                setTyping(hasKey ? 'Expandiendo consulta con IA…' : 'Buscando con sinónimos locales…');
                 document.getElementById('aiSend')?.setAttribute('disabled', 'true');
+                await this.yieldUI(20);
                 try {
-                    const hits = await this.search(q, 8);
+                    let query = q;
+                    if (hasKey) {
+                        query = await this.expandQueryWithAI(q);
+                        await this.yieldUI(10);
+                    }
+                    setTyping(hasKey ? 'Buscando en biblioteca (ligas y Supabase)…' : 'Buscando en biblioteca…');
+                    const hits = await this.search(query, hasKey ? 10 : 8, setTyping);
+                    await this.yieldUI(10);
                     let answer = null;
-                    if (this.getGeminiKey()) {
-                        try { answer = await this.answerWithGemini(q, hits); }
-                        catch (e) {
-                            this.appendMsg('err', 'Gemini no disponible: ' + (e.message || e) + '. Uso respuesta local.');
+                    if (hasKey) {
+                        setTyping('Redactando respuesta con IA…');
+                        await this.yieldUI(10);
+                        try {
+                            answer = await this.answerWithGemini(q, hits);
+                        } catch (e) {
+                            this.appendMsg('err', 'IA no disponible: ' + (e.message || e) + '. Uso ranking local con sinónimos.');
                         }
                     }
-                    if (!answer) answer = this.buildLocalAnswer(q, hits);
+                    if (!answer) {
+                        answer = this.buildLocalAnswer(q, hits);
+                        if (!hasKey) {
+                            answer += '\n\n⚠️ No hay API key de Gemini activa. Ve a ☰ → Configurar Asistente IA, pega tu AIza…, guarda, y vuelve a preguntar para respuestas semánticas.';
+                        }
+                    }
                     this.appendMsg('bot', answer, hits);
                 } catch (e) {
                     this.appendMsg('err', String(e.message || e));
                 } finally {
                     this.busy = false;
-                    document.getElementById('aiTyping')?.classList.add('hidden');
+                    if (typing) typing.classList.add('hidden');
                     document.getElementById('aiSend')?.removeAttribute('disabled');
+                    try { this.enqueueBackgroundIndex(this.scopedDocs()); } catch (e) {}
                 }
             },
 
@@ -11316,7 +11865,7 @@ function getFilteredData() {
             <button type="button" class="ai-icon-btn" id="aiClose" title="Cerrar"><i class="fas fa-xmark"></i></button>
         </div>
         <div class="ai-msgs" id="aiMsgs">
-            <div class="ai-empty" id="aiEmpty"><strong>¿En qué política se habla de…?</strong>Busca por palabras en nomenclatura, nombre, comentarios y texto de archivos vinculados (PDF/imagen con OCR).</div>
+            <div class="ai-empty" id="aiEmpty"><strong>¿En qué política se habla de…?</strong>Busca en PDF, Word, Excel, PowerPoint, texto e imágenes (OCR) enlazados o en Supabase.</div>
         </div>
         <div class="ai-typing hidden" id="aiTyping">Analizando documentos…</div>
         <div class="ai-foot">
