@@ -1995,15 +1995,15 @@
         }
         .header-menu-dropdown {
             display: none;
-            position: absolute;
-            top: calc(100% + 6px);
+            position: fixed;
+            top: 0;
             right: 0;
             min-width: 180px;
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
             border-radius: 10px;
             box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-            z-index: 6000;
+            z-index: 10050;
             padding: 6px;
             flex-direction: column;
             gap: 2px;
@@ -3518,7 +3518,7 @@
                         <button class="btn btn-sm btn-excel manager-only" onclick="exportToExcel(); closeHeaderMenu();"><i class="fas fa-file-excel"></i> Excel</button>
                         <button class="btn btn-sm manager-only" style="background:#6366f1;color:white;border-color:#6366f1;" onclick="openManageSolicitudesModal(); closeHeaderMenu();"><i class="fas fa-link"></i> Solicitudes</button>
                         <button class="btn btn-sm btn-danger manager-only" onclick="eliminarBD(); closeHeaderMenu();"><i class="fas fa-database"></i> Eliminar BD</button>
-                        <button class="btn btn-sm" style="background:#2563eb;color:white;border-color:#2563eb;" onclick="openAiConfigModal(); closeHeaderMenu();"><i class="fas fa-robot"></i> Configurar Asistente IA</button>
+                        <button class="btn btn-sm manager-only" style="background:#2563eb;color:white;border-color:#2563eb;" onclick="openAiConfigModal(); closeHeaderMenu();"><i class="fas fa-robot"></i> Configurar Asistente IA</button>
                         <div class="menu-divider"></div>
                         <button class="btn btn-sm" style="color:var(--red);" onclick="logout(); closeHeaderMenu();"><i class="fas fa-sign-out-alt"></i> Salir</button>
                     </div>
@@ -7284,16 +7284,51 @@
         // ============================================================
         // MENÚ COLAPSABLE DEL ENCABEZADO
         // ============================================================
+        function positionHeaderMenuDropdown() {
+            const dd = document.getElementById('headerMenuDropdown');
+            const btn = document.getElementById('headerMenuBtn');
+            if (!dd || !btn) return;
+            const r = btn.getBoundingClientRect();
+            const pad = 6;
+            const width = Math.max(dd.offsetWidth || 180, 180);
+            let left = r.right - width;
+            if (left < 8) left = 8;
+            if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+            let top = r.bottom + pad;
+            dd.style.left = left + 'px';
+            dd.style.right = 'auto';
+            dd.style.top = top + 'px';
+            requestAnimationFrame(() => {
+                const h = dd.offsetHeight || 0;
+                if (top + h > window.innerHeight - 8 && r.top - pad - h > 8) {
+                    dd.style.top = (r.top - pad - h) + 'px';
+                }
+            });
+        }
         function toggleHeaderMenu(e) {
             if (e) e.stopPropagation();
             const dd = document.getElementById('headerMenuDropdown');
             if (!dd) return;
-            dd.classList.toggle('open');
+            const willOpen = !dd.classList.contains('open');
+            if (willOpen) {
+                dd.classList.add('open');
+                positionHeaderMenuDropdown();
+            } else {
+                dd.classList.remove('open');
+            }
         }
         function closeHeaderMenu() {
             const dd = document.getElementById('headerMenuDropdown');
             if (dd) dd.classList.remove('open');
         }
+        window.addEventListener('resize', function() {
+            const dd = document.getElementById('headerMenuDropdown');
+            if (dd && dd.classList.contains('open')) positionHeaderMenuDropdown();
+        });
+        window.addEventListener('scroll', function() {
+            const dd = document.getElementById('headerMenuDropdown');
+            if (dd && dd.classList.contains('open')) positionHeaderMenuDropdown();
+        }, true);
         document.addEventListener('click', function(e) {
             const wrap = document.querySelector('.header-menu-wrap');
             if (wrap && !wrap.contains(e.target)) closeHeaderMenu();
