@@ -4858,7 +4858,7 @@
             saveData(data);
             renderHistory();
 
-            const link = 'https://internalcontrolengineering.github.io/Matriz-Documental/';
+            const link = 'https://internalcontrolengineering.github.io/MatrizDocumental_/';
             const expDate = new Date(solicitud.expiresAt).toLocaleString('es-ES');
             const docList = docs.map(d => `• ${d.nomenclatura} ${d.nombre || ''}`.trim()).join('\n');
             const subject = encodeURIComponent(`Acceso a documentación normativa: ${name}`);
@@ -5377,7 +5377,7 @@
             renderHistory();
 
             // Correo informando la actualización
-            const link = 'https://internalcontrolengineering.github.io/Matriz-Documental/';
+            const link = 'https://internalcontrolengineering.github.io/MatrizDocumental_/';
             const expDate = new Date(sol.expiresAt).toLocaleString('es-ES', {
                 day: '2-digit', month: 'short', year: 'numeric',
                 hour: '2-digit', minute: '2-digit'
@@ -7235,7 +7235,7 @@
 
             // Correo solo si hay contraseña (acceso habilitado)
             if (accessEnabled) {
-                const link = 'https://internalcontrolengineering.github.io/Matriz-Documental/';
+                const link = 'https://internalcontrolengineering.github.io/MatrizDocumental_/';
                 const expDate = new Date(cfg.expiresAt).toLocaleString('es-ES', {
                     day: '2-digit', month: 'short', year: 'numeric',
                     hour: '2-digit', minute: '2-digit'
