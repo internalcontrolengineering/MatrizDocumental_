@@ -9951,97 +9951,124 @@ function getFilteredData() {
             if (!isManager) return;
             const file = event.target.files[0];
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                try {
-                    const text = e.target.result;
-                    const lines = text.split('\n').filter(l => l.trim() !== '');
-                    if (lines.length < 2) { showToast('Archivo vacío', 'warning'); return; }
-                    const headerVals = parseCSVLine(lines[0]);
-                    const headers = headerVals.map(h => h.trim().replace(/^"|"$/g, '').replace(/^\uFEFF/, ''));
-                    const expected = ['Unidad de Negocio', 'Nomenclatura', 'Nombre', 'Macroproceso', 'Área',
-                        'Departamento', 'Tipo de Documento', 'Categoría', 'Clasificación', 'Versión',
-                        'Fecha de Emisión (1a versión)', 'Fecha de última Actualización', 'Fecha de Autorización',
-                        'Fecha de difusión', 'Hipervínculo', 'Comentarios', 'Documento Padre', 'Estado'
-                    ];
-                    const map = {};
-                    headers.forEach((h, i) => { const clean = h.trim().toLowerCase();
-                        expected.forEach((eh, idx) => { if (clean === eh.toLowerCase()) map[idx] = i; }); });
-                    // Estado obligatorio; Documento Padre opcional (plantillas antiguas sin esa columna)
-                    const required = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
-                    for (let idx of required) {
-                        if (map[idx] === undefined) {
-                            showToast('No se encontró columna: "' + expected[idx] + '"', 'warning');
-                            return;
-                        }
-                    }
-                    // Estado: índice 17 (nueva plantilla) o 16 (plantilla anterior sin Documento Padre)
-                    if (map[17] === undefined && map[16] === undefined) {
-                        showToast('No se encontró columna: "Estado"', 'warning');
+            const fname = (file.name || '').toLowerCase();
+            const isExcel = fname.endsWith('.xlsx') || fname.endsWith('.xls') ||
+                (file.type && (file.type.includes('spreadsheet') || file.type.includes('excel')));
+
+            const processMatrixRows = (allRows) => {
+                const rows = (allRows || []).filter(r => Array.isArray(r) && r.some(c => String(c == null ? '' : c).trim() !== ''));
+                if (rows.length < 2) { showToast('Archivo vacío', 'warning'); return; }
+                const headers = rows[0].map(h => String(h == null ? '' : h).trim().replace(/^\uFEFF/, ''));
+                const expected = ['Unidad de Negocio', 'Nomenclatura', 'Nombre', 'Macroproceso', 'Área',
+                    'Departamento', 'Tipo de Documento', 'Categoría', 'Clasificación', 'Versión',
+                    'Fecha de Emisión (1a versión)', 'Fecha de última Actualización', 'Fecha de Autorización',
+                    'Fecha de difusión', 'Hipervínculo', 'Comentarios', 'Documento Padre', 'Estado'
+                ];
+                const map = {};
+                headers.forEach((h, i) => { const clean = h.trim().toLowerCase();
+                    expected.forEach((eh, idx) => { if (clean === eh.toLowerCase()) map[idx] = i; }); });
+                // Estado obligatorio; Documento Padre opcional (plantillas antiguas sin esa columna)
+                const required = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+                for (let idx of required) {
+                    if (map[idx] === undefined) {
+                        showToast('No se encontró columna: "' + expected[idx] + '"', 'warning');
                         return;
                     }
-                    const hasPadreCol = map[16] !== undefined && map[17] !== undefined;
-                    const statusIdx = hasPadreCol ? 17 : 16;
-                    const padreIdx = hasPadreCol ? 16 : null;
-                    // Duplicados por nomenclatura NORMALIZADA
-                    const existingNorm = new Set(
-                        data.documents.map(d => normalizarNomenclatura(d.nomenclatura)).filter(Boolean)
-                    );
-                    const batchNorm = new Set();
-                    batchData = [];
-                    let duplicates = [];
-                    for (let i = 1; i < lines.length; i++) {
-                        const vals = parseCSVLine(lines[i]);
-                        while (vals.length < 18) vals.push('');
-                        const nom = vals[map[1]] || 'DOC-';
-                        const nomNorm = normalizarNomenclatura(nom);
-                        if (existingNorm.has(nomNorm) || batchNorm.has(nomNorm)) { duplicates.push(
-                            nom); continue; }
-                        batchNorm.add(nomNorm);
-                        const tipo = vals[map[6]] || 'Sin tipo';
-                        const cat = getCategoriaByTipo(tipo);
-                        const doc = {
-                            unidad: vals[map[0]] || 'Sin unidad',
-                            nomenclatura: nom,
-                            nombre: vals[map[2]] || 'Sin nombre',
-                            macro: vals[map[3]] || 'Sin macro',
-                            area: vals[map[4]] || 'Sin área',
-                            departamento: vals[map[5]] || 'Sin depto',
-                            tipo: tipo,
-                            categoria: vals[map[7]] || cat,
-                            clasificacion: vals[map[8]] || 'Sin clasificación',
-                            version: parseInt(vals[map[9]]) || 1,
-                            fechaEmision: vals[map[10]] || '',
-                            fechaActualizacion: vals[map[11]] || '',
-                            fechaAutorizacion: vals[map[12]] || '',
-                            fechaDifusion: vals[map[13]] || '',
-                            hipervinculo: vals[map[14]] || '',
-                            comentarios: vals[map[15]] || '',
-                            documentoPadre: padreIdx !== null ? String(vals[map[padreIdx]] || '').trim() : '',
-                            status: vals[map[statusIdx]] || 'Nuevo'
-                        };
-                        batchData.push(doc);
-                    }
-                    if (batchData.length === 0 && duplicates.length > 0) {
-                        showToast(`No hay documentos nuevos. ${duplicates.length} duplicados omitidos`, 'warning');
-                        return;
-                    }
-                    if (batchData.length === 0) {
-                        showToast('No hay datos válidos', 'warning');
-                        return;
-                    }
-                    const warn = document.getElementById('duplicateWarning');
-                    if (duplicates.length > 0) { warn.style.display = 'block';
-                        warn.innerHTML =
-                            `<i class="fas fa-exclamation-triangle"></i> <strong>${duplicates.length} omitido(s)</strong> por duplicado: ${duplicates.join(', ')}`; } else
-                        warn.style.display = 'none';
-                    showBatchPreview(batchData);
-                } catch (err) {
-                    showToast('Error: ' + err.message, 'warning');
-                    console.error(err);
                 }
+                // Estado: índice 17 (nueva plantilla) o 16 (plantilla anterior sin Documento Padre)
+                if (map[17] === undefined && map[16] === undefined) {
+                    showToast('No se encontró columna: "Estado"', 'warning');
+                    return;
+                }
+                const hasPadreCol = map[16] !== undefined && map[17] !== undefined;
+                const statusIdx = hasPadreCol ? 17 : 16;
+                const padreIdx = hasPadreCol ? 16 : null;
+                // Duplicados por nomenclatura NORMALIZADA
+                const existingNorm = new Set(
+                    data.documents.map(d => normalizarNomenclatura(d.nomenclatura)).filter(Boolean)
+                );
+                const batchNorm = new Set();
+                batchData = [];
+                let duplicates = [];
+                for (let i = 1; i < rows.length; i++) {
+                    const vals = rows[i].map(v => String(v == null ? '' : v).trim());
+                    while (vals.length < 18) vals.push('');
+                    const nom = vals[map[1]] || 'DOC-';
+                    const nomNorm = normalizarNomenclatura(nom);
+                    if (existingNorm.has(nomNorm) || batchNorm.has(nomNorm)) { duplicates.push(
+                        nom); continue; }
+                    batchNorm.add(nomNorm);
+                    const tipo = vals[map[6]] || 'Sin tipo';
+                    const cat = getCategoriaByTipo(tipo);
+                    const doc = {
+                        unidad: vals[map[0]] || 'Sin unidad',
+                        nomenclatura: nom,
+                        nombre: vals[map[2]] || 'Sin nombre',
+                        macro: vals[map[3]] || 'Sin macro',
+                        area: vals[map[4]] || 'Sin área',
+                        departamento: vals[map[5]] || 'Sin depto',
+                        tipo: tipo,
+                        categoria: vals[map[7]] || cat,
+                        clasificacion: vals[map[8]] || 'Sin clasificación',
+                        version: parseInt(vals[map[9]]) || 1,
+                        fechaEmision: vals[map[10]] || '',
+                        fechaActualizacion: vals[map[11]] || '',
+                        fechaAutorizacion: vals[map[12]] || '',
+                        fechaDifusion: vals[map[13]] || '',
+                        hipervinculo: vals[map[14]] || '',
+                        comentarios: vals[map[15]] || '',
+                        documentoPadre: padreIdx !== null ? String(vals[map[padreIdx]] || '').trim() : '',
+                        status: vals[map[statusIdx]] || 'Nuevo'
+                    };
+                    batchData.push(doc);
+                }
+                if (batchData.length === 0 && duplicates.length > 0) {
+                    showToast(`No hay documentos nuevos. ${duplicates.length} duplicados omitidos`, 'warning');
+                    return;
+                }
+                if (batchData.length === 0) {
+                    showToast('No hay datos válidos', 'warning');
+                    return;
+                }
+                const warn = document.getElementById('duplicateWarning');
+                if (duplicates.length > 0) { warn.style.display = 'block';
+                    warn.innerHTML =
+                        `<i class="fas fa-exclamation-triangle"></i> <strong>${duplicates.length} omitido(s)</strong> por duplicado: ${duplicates.join(', ')}`; } else
+                    warn.style.display = 'none';
+                showBatchPreview(batchData);
             };
-            reader.readAsText(file);
+
+            if (isExcel) {
+                if (!window.XLSX) { showToast('Librería Excel no disponible', 'warning'); event.target.value = ''; return; }
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const dataAb = new Uint8Array(e.target.result);
+                        const wb = XLSX.read(dataAb, { type: 'array', raw: false });
+                        const sheet = wb.Sheets[wb.SheetNames[0]];
+                        const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+                        processMatrixRows(allRows);
+                    } catch (err) {
+                        showToast('Error: ' + err.message, 'warning');
+                        console.error(err);
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            } else {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const textCsv = e.target.result;
+                        const lines = textCsv.split('\n').filter(l => l.trim() !== '');
+                        const allRows = lines.map(l => parseCSVLine(l).map(c => String(c == null ? '' : c).replace(/^"|"$/g, '').trim()));
+                        processMatrixRows(allRows);
+                    } catch (err) {
+                        showToast('Error: ' + err.message, 'warning');
+                        console.error(err);
+                    }
+                };
+                reader.readAsText(file);
+            }
             event.target.value = '';
         }
 
@@ -10280,23 +10307,25 @@ function getFilteredData() {
                 'Fecha de última Actualización', 'Fecha de Autorización', 'Fecha de difusión', 'Hipervínculo',
                 'Comentarios', 'Documento Padre', 'Estado'
             ];
-            let csv = '\uFEFF' + headers.join(',') + '\n';
+            const rows = [headers];
             f.forEach((d, index) => {
                 const visualId = index + 1;
                 const padreInfo = resolveDocumentoPadreInfo(d.documentoPadre);
-                const row = [visualId, escapeCSVField(d.unidad || ''), escapeCSVField(d.nomenclatura || ''),
-                    escapeCSVField(d.nombre || ''), escapeCSVField(d.macro || ''), escapeCSVField(d.area || ''),
-                    escapeCSVField(d.departamento || ''), escapeCSVField(d.tipo || ''),
-                    escapeCSVField(d.categoria || ''), escapeCSVField(d.clasificacion || ''), d.version || '',
+                rows.push([
+                    visualId, d.unidad || '', d.nomenclatura || '', d.nombre || '', d.macro || '', d.area || '',
+                    d.departamento || '', d.tipo || '', d.categoria || '', d.clasificacion || '', d.version || '',
                     d.fechaEmision || '', d.fechaActualizacion || '',
-                    d.fechaAutorizacion || '', d.fechaDifusion || '', escapeCSVField(d.hipervinculo || ''),
-                    escapeCSVField(d.comentarios || ''), escapeCSVField(padreInfo.etiqueta || ''),
-                    escapeCSVField(d.status || '')
-                ];
-                csv += row.join(',') + '\n';
+                    d.fechaAutorizacion || '', d.fechaDifusion || '', d.hipervinculo || '',
+                    d.comentarios || '', padreInfo.etiqueta || '', d.status || ''
+                ]);
             });
-            const nombreArchivo = `Matriz_Documental_${new Date().toISOString().slice(0,10)}.csv`;
-            await guardarConDialogoAvanzado(csv, nombreArchivo, 'text/csv;charset=utf-8');
+            if (!window.XLSX) { showToast('Librería Excel no disponible', 'warning'); return; }
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(rows);
+            XLSX.utils.book_append_sheet(wb, ws, 'Matriz');
+            const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+            const nombreArchivo = `Matriz_Documental_${new Date().toISOString().slice(0,10)}.xlsx`;
+            await guardarConDialogoAvanzado(wbout, nombreArchivo, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         }
 
         async function exportHistory() {
@@ -10314,7 +10343,6 @@ function getFilteredData() {
                 'Fecha de última Actualización', 'Fecha de Autorización', 'Fecha de difusión', 'Hipervínculo',
                 'Comentarios', 'Documento Padre', 'Estado'
             ];
-            let csv = '\uFEFF' + headers.join(',') + '\n';
             // 18 columnas (incluye Documento Padre = nomenclatura del padre, opcional)
             const example = [
                 'COMA',
@@ -10336,9 +10364,13 @@ function getFilteredData() {
                 '',
                 'Nuevo'
             ];
-            csv += example.map(escapeCSVField).join(',') + '\n';
-            const nombreArchivo = 'plantilla_matriz_documental.csv';
-            await guardarConDialogoAvanzado(csv, nombreArchivo, 'text/csv;charset=utf-8');
+            if (!window.XLSX) { showToast('Librería Excel no disponible', 'warning'); return; }
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet([headers, example]);
+            XLSX.utils.book_append_sheet(wb, ws, 'Plantilla');
+            const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+            const nombreArchivo = 'plantilla_matriz_documental.xlsx';
+            await guardarConDialogoAvanzado(wbout, nombreArchivo, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         }
 
         async function importData(e) {
